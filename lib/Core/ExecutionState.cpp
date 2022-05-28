@@ -70,15 +70,8 @@ StackFrame::~StackFrame() {
 
 /***/
 
-ExecutionState::ExecutionState(KFunction *kf) :
-    pc(kf->instructions),
-    prevPC(pc),
-    depth(0),
-    ptreeNode(nullptr),
-    steppedInstructions(0),
-    instsSinceCovNew(0),
-    coveredNew(false),
-    forkDisabled(false) {
+ExecutionState::ExecutionState(KFunction *kf)
+    : pc(kf->instructions), prevPC(pc) {
   pushFrame(nullptr, kf);
   setID();
 }
@@ -103,6 +96,7 @@ ExecutionState::ExecutionState(const ExecutionState& state):
     symPathOS(state.symPathOS),
     coveredLines(state.coveredLines),
     symbolics(state.symbolics),
+    cexPreferences(state.cexPreferences),
     arrayNames(state.arrayNames),
     openMergeStack(state.openMergeStack),
     steppedInstructions(state.steppedInstructions),
@@ -357,4 +351,8 @@ void ExecutionState::dumpStack(llvm::raw_ostream &out) const {
 void ExecutionState::addConstraint(ref<Expr> e) {
   ConstraintManager c(constraints);
   c.addConstraint(e);
+}
+
+void ExecutionState::addCexPreference(const ref<Expr> &cond) {
+  cexPreferences = cexPreferences.insert(cond);
 }

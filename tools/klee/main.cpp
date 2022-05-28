@@ -24,6 +24,7 @@
 #include "klee/Support/PrintVersion.h"
 #include "klee/System/Time.h"
 
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InstrTypes.h"
@@ -34,6 +35,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Errno.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -42,11 +44,6 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Signals.h"
 
-#if LLVM_VERSION_CODE >= LLVM_VERSION(4, 0)
-#include <llvm/Bitcode/BitcodeReader.h>
-#else
-#include <llvm/Bitcode/ReaderWriter.h>
-#endif
 
 #include <dirent.h>
 #include <signal.h>
@@ -175,7 +172,7 @@ namespace {
               "Don't link in a libc (only provide freestanding environment)"),
           clEnumValN(LibcType::KleeLibc, "klee", "Link in KLEE's libc"),
           clEnumValN(LibcType::UcLibc, "uclibc",
-                     "Link in uclibc (adapted for KLEE)") KLEE_LLVM_CL_VAL_END),
+                     "Link in uclibc (adapted for KLEE)")),
       cl::init(LibcType::FreestandingLibc), cl::cat(LinkCat));
 
   cl::list<std::string>
@@ -228,12 +225,6 @@ namespace {
   cl::OptionCategory ReplayCat("Replaying options",
                                "These options impact replaying of test cases.");
   
-  cl::opt<bool>
-  ReplayKeepSymbolic("replay-keep-symbolic",
-                     cl::desc("Replay the test cases only by asserting "
-                              "the bytes, not necessarily making them concrete."),
-                     cl::cat(ReplayCat));
-
   cl::list<std::string>
   ReplayKTestFile("replay-ktest-file",
                   cl::desc("Specify a ktest file to use for replay"),
@@ -280,8 +271,8 @@ namespace {
 
   cl::opt<bool>
   Watchdog("watchdog",
-           cl::desc("Use a watchdog process to enforce --max-time."),
-           cl::init(0),
+           cl::desc("Use a watchdog process to enforce --max-time (default=false)"),
+           cl::init(false),
            cl::cat(TerminationCat));
 
   cl::opt<bool>
@@ -1029,13 +1020,6 @@ static void halt_via_gdb(int pid) {
     perror("system");
 }
 
-#ifndef SUPPORT_KLEE_UCLIBC
-static void
-linkWithUclibc(StringRef libDir, std::string opt_suffix,
-               std::vector<std::unique_ptr<llvm::Module>> &modules) {
-  klee_error("invalid libc, no uclibc support!\n");
-}
-#else
 static void replaceOrRenameFunction(llvm::Module *module,
 		const char *old_name, const char *new_name)
 {
@@ -1152,21 +1136,20 @@ linkWithUclibc(StringRef libDir, std::string opt_suffix,
     klee_error("error loading the fortify library '%s': %s",
                FortifyPath.c_str(), errorMsg.c_str());
 }
-#endif
 
 int main(int argc, char **argv, char **envp) {
   atexit(llvm_shutdown);  // Call llvm_shutdown() on exit.
 
+#if LLVM_VERSION_CODE >= LLVM_VERSION(13, 0)
+  KCommandLine::HideOptions(llvm::cl::getGeneralCategory());
+#else
   KCommandLine::HideOptions(llvm::cl::GeneralCategory);
+#endif
 
   llvm::InitializeNativeTarget();
 
   parseArguments(argc, argv);
-#if LLVM_VERSION_CODE >= LLVM_VERSION(3, 9)
   sys::PrintStackTraceOnErrorSignal(argv[0]);
-#else
-  sys::PrintStackTraceOnErrorSignal();
-#endif
 
   if (Watchdog) {
     if (MaxTime.empty()) {
@@ -1258,12 +1241,20 @@ int main(int argc, char **argv, char **envp) {
 
   llvm::Module *mainModule = M.get();
 
+  const std::string &module_triple = mainModule->getTargetTriple();
+  std::string host_triple = llvm::sys::getDefaultTargetTriple();
+
+  if (module_triple != host_triple)
+    klee_warning("Module and host target triples do not match: '%s' != '%s'\n"
+                 "This may cause unexpected crashes or assertion violations.",
+                 module_triple.c_str(), host_triple.c_str());
+
   // Detect architecture
   std::string opt_suffix = "64"; // Fall back to 64bit
-  if (mainModule->getTargetTriple().find("i686") != std::string::npos ||
-      mainModule->getTargetTriple().find("i586") != std::string::npos ||
-      mainModule->getTargetTriple().find("i486") != std::string::npos ||
-      mainModule->getTargetTriple().find("i386") != std::string::npos)
+  if (module_triple.find("i686") != std::string::npos ||
+      module_triple.find("i586") != std::string::npos ||
+      module_triple.find("i486") != std::string::npos ||
+      module_triple.find("i386") != std::string::npos)
     opt_suffix = "32";
 
   // Add additional user-selected suffix
